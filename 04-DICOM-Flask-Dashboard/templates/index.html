@@ -388,13 +388,40 @@
                                     
                                     <!-- 3D Panel -->
                                     <div class="tab-pane fade" id="3d-panel" role="tabpanel">
-                                        <div class="alert alert-info">
-                                            3D visualization is available in the pro version.
+                                        <div id="3d-available">
+                                            <div class="mb-3">
+                                                <button id="render-3d" class="btn btn-primary">
+                                                    <i class="fas fa-cube"></i> Render 3D View
+                                                </button>
+                                                <small class="text-muted d-block mt-1">
+                                                    Uses currently selected structures
+                                                </small>
+                                            </div>
+                                            <div id="3d-container" class="text-center mb-3 d-none">
+                                                <img id="3d-image" src="" class="img-fluid rounded" alt="3D Structures">
+                                                <div id="3d-loading" class="image-loading d-none">
+                                                    <div class="spinner-border text-light" role="status">
+                                                        <span class="visually-hidden">Loading...</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div id="3d-info" class="d-none">
+                                                <h5>Structures Shown in 3D</h5>
+                                                <ul id="3d-structures-list" class="list-group">
+                                                </ul>
+                                                <div class="alert alert-warning mt-3">
+                                                    <small>
+                                                        <i class="fas fa-info-circle"></i>
+                                                        3D rendering is a static image. For interactive 3D,
+                                                        consider using specialized software.
+                                                    </small>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div class="text-center">
-                                            <img src="{{ url_for('static', filename='img/3d-preview.jpg') }}" 
-                                                 class="img-fluid rounded" 
-                                                 alt="3D Preview">
+                                        <div id="3d-unavailable" class="d-none">
+                                            <div class="alert alert-info">
+                                                Structure data is required for 3D visualization.
+                                            </div>
                                         </div>
                                     </div>
                                 </div>

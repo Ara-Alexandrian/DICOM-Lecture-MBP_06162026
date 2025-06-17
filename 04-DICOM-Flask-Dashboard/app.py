@@ -5,6 +5,7 @@ from flask import Flask, render_template, request, jsonify, send_file
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D  # Required for 3D plotting
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 import matplotlib.colors as mcolors
@@ -15,6 +16,7 @@ import json
 from dotenv import load_dotenv
 from scipy import ndimage
 from skimage import measure
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection  # For 3D structures
 
 # Load environment variables
 load_dotenv()
@@ -157,48 +159,118 @@ def get_contour_data(rs_instance, structure_name):
     contour_data = []
     for roi_contour in rs.ROIContourSequence:
         if roi_contour.ReferencedROINumber == roi_number:
-            # Get the color
-            color = [c/255 for c in roi_contour.ROIDisplayColor]
+            # Get the color (with fallback if ROIDisplayColor is missing)
+            if hasattr(roi_contour, 'ROIDisplayColor'):
+                color = [c/255 for c in roi_contour.ROIDisplayColor]
+            else:
+                # Default to a bright color that will be visible
+                color = [1.0, 0.0, 1.0]  # Magenta as fallback
             
             # Get the contour sequence
             if hasattr(roi_contour, 'ContourSequence'):
                 for contour in roi_contour.ContourSequence:
+                    # Skip contours without data
+                    if not hasattr(contour, 'ContourData') or len(contour.ContourData) < 6:
+                        continue
+                        
                     contour_coords = contour.ContourData
                     # Reshape into x,y,z triplets
                     triplets = np.array(contour_coords).reshape((-1, 3))
+                    
+                    # Skip contours with fewer than 3 points
+                    if triplets.shape[0] < 3:
+                        continue
+                    
+                    # Calculate average z position for more accurate slice matching
+                    # Some structures might have slightly varying z values within a single contour
+                    avg_z = np.mean(triplets[:, 2])
+                    
                     contour_data.append({
                         'triplets': triplets,
-                        'z': triplets[0, 2],  # Z coordinate (slice location)
+                        'z': avg_z,  # Use average Z coordinate for better slice matching
+                        'z_min': np.min(triplets[:, 2]),  # Store min z for range checks
+                        'z_max': np.max(triplets[:, 2]),  # Store max z for range checks
                         'color': color
                     })
     
+    # Log the number of contours found
+    if contour_data:
+        print(f"Found {len(contour_data)} contours for structure '{structure_name}'")
+    else:
+        print(f"No contours found for structure '{structure_name}'")
+        
     return contour_data
 
 def list_structures(rs_instance):
-    """List all structures in an RT Structure Set"""
+    """List all structures in an RT Structure Set with extensive validation"""
     if not rs_instance:
         return []
     
     rs = rs_instance['instance']
     structures = []
     
-    if hasattr(rs, 'StructureSetROISequence'):
-        for roi in rs.StructureSetROISequence:
-            if hasattr(rs, 'ROIContourSequence'):
-                for roi_contour in rs.ROIContourSequence:
-                    if roi_contour.ReferencedROINumber == roi.ROINumber:
-                        if hasattr(roi_contour, 'ROIDisplayColor'):
-                            color = [c/255 for c in roi_contour.ROIDisplayColor]
-                            hex_color = "#{:02x}{:02x}{:02x}".format(
-                                int(color[0]*255), int(color[1]*255), int(color[2]*255))
-                        else:
-                            hex_color = "#FFFFFF"
-                        structures.append({
-                            'number': roi.ROINumber,
-                            'name': roi.ROIName,
-                            'color': hex_color
-                        })
-                        break
+    # Make sure we have the required sequences
+    if not hasattr(rs, 'StructureSetROISequence') or not hasattr(rs, 'ROIContourSequence'):
+        return []
+    
+    # Create a safe structure list with validation
+    for roi in rs.StructureSetROISequence:
+        # Skip ROIs without required attributes
+        if not hasattr(roi, 'ROINumber') or not hasattr(roi, 'ROIName'):
+            continue
+            
+        # Skip specific point-only structures by name that shouldn't be rendered
+        # These often appear as reference markers, isocenter markers, etc.
+        skip_keywords = ['ISO', 'MARKER', 'POINT', 'MARK', 'REF', 'CAL']
+        should_skip = False
+        for keyword in skip_keywords:
+            if keyword in roi.ROIName.upper():
+                should_skip = True
+                break
+        
+        if should_skip:
+            continue
+            
+        valid_contour = False
+        for roi_contour in rs.ROIContourSequence:
+            # Check if this contour references the current ROI
+            if not hasattr(roi_contour, 'ReferencedROINumber'):
+                continue
+                
+            if roi_contour.ReferencedROINumber == roi.ROINumber:
+                # Get color with fallback
+                if hasattr(roi_contour, 'ROIDisplayColor'):
+                    color = [c/255 for c in roi_contour.ROIDisplayColor]
+                    hex_color = "#{:02x}{:02x}{:02x}".format(
+                        int(color[0]*255), int(color[1]*255), int(color[2]*255))
+                else:
+                    # Default bright color if no color defined
+                    hex_color = "#FF00FF"  # Magenta
+                
+                # Carefully validate that there's actual contour data to display
+                has_valid_contours = False
+                if hasattr(roi_contour, 'ContourSequence') and len(roi_contour.ContourSequence) > 0:
+                    # Check each contour has enough points to be a valid polygon (at least 3 points)
+                    for contour in roi_contour.ContourSequence:
+                        if hasattr(contour, 'ContourData') and len(contour.ContourData) >= 6:  # At least 3 points (x,y,z)
+                            has_valid_contours = True
+                            break
+                
+                if has_valid_contours:
+                    valid_contour = True
+                    structures.append({
+                        'number': roi.ROINumber,
+                        'name': roi.ROIName,
+                        'color': hex_color,
+                        'has_contours': True
+                    })
+                    break
+    
+    # Log how many structures were filtered out
+    print(f"Found {len(structures)} valid structures with contours")
+                    
+    # Sort structures by name for consistency
+    structures.sort(key=lambda x: x['name'])
     
     return structures
 
@@ -269,13 +341,23 @@ def render_ct_slice(ct_instance, slice_idx, window_center, window_width,
     fig, ax = plt.subplots(figsize=(10, 10), dpi=120)
     ax.imshow(hu_image_windowed, cmap='gray', aspect='equal')
 
+    # Get image dimensions and origin for coordinate conversion
+    rows, cols = hu_image.shape
+    origin = current_slice.ImagePositionPatient
+    spacing = current_slice.PixelSpacing
+    current_z = current_slice.SliceLocation
+
+    # Debug print image size and position
+    print(f"Image dimensions: {rows}x{cols}")
+    print(f"Image position: {origin}")
+    print(f"Pixel spacing: {spacing}")
+    print(f"Slice location: {current_z}")
+
     # Track which structures are actually shown for reporting
     structures_shown = []
 
     # Add structures if requested
     if structures and rs_data:
-        current_z = current_slice.SliceLocation
-
         # Calculate vertical spacing for structure labels
         label_y_offset = 30
 
@@ -285,44 +367,77 @@ def render_ct_slice(ct_instance, slice_idx, window_center, window_width,
         for i, structure_name in enumerate(sorted_structures):
             contour_data = get_contour_data(rs_data, structure_name)
             if not contour_data:
+                print(f"No contour data found for structure {structure_name}")
                 continue
 
-            # Find contours on this slice (with increased tolerance for small structures)
-            # Use a larger tolerance (2.0mm) to ensure small structures are visible
-            contours_on_slice = [c for c in contour_data if np.isclose(c['z'], current_z, atol=2.0)]
+            # Use much more relaxed tolerance for z-matching - 5mm in each direction
+            contours_on_slice = [c for c in contour_data if abs(c['z'] - current_z) <= 5.0]
 
-            # Add contours to the plot
-            patches = []
+            if not contours_on_slice:
+                print(f"No contours found for structure {structure_name} on slice at {current_z}mm")
+                continue
+
+            print(f"Found {len(contours_on_slice)} contours for structure {structure_name} on slice at {current_z}mm")
+
+            # Keep track if we successfully rendered any contours for this structure
+            structure_rendered = False
+
+            # Process each contour - use a simpler but more robust approach
             for contour in contours_on_slice:
-                # Extract x,y coordinates
-                points = contour['triplets'][:, :2]
-                polygon = Polygon(points, closed=True)
-                patches.append(polygon)
+                try:
+                    # Extract contour points
+                    points_3d = contour['triplets']
 
-            # Create a collection and add it to the plot
-            if patches:
-                color = contour_data[0]['color']
+                    # Skip if too few points
+                    if len(points_3d) < 3:
+                        continue
 
-                # Enhanced visibility:
-                # - Higher alpha value (0.6) for better visibility of the structure fill
-                # - Thicker linewidth (2.5) with black edge outline for better contrast
-                # - Different edge color for better visibility against both bright and dark backgrounds
-                edge_color = 'black'  # Black edges show up well against both bright and dark areas
-                collection = PatchCollection(
-                    patches,
-                    alpha=0.6,  # More opaque for better visibility
-                    color=color,
-                    linewidths=2.5,  # Thicker lines
-                    edgecolor=edge_color
-                )
-                ax.add_collection(collection)
+                    # SIMPLER CONVERSION STRATEGY:
+                    # 1. Extract X and Y coordinates from the 3D points
+                    # 2. Scale them according to pixel spacing
+                    # 3. Shift them according to the image origin
 
+                    # Extract x and y coordinates
+                    x_points = [(p[0] - origin[0]) / spacing[1] for p in points_3d]
+                    y_points = [(p[1] - origin[1]) / spacing[0] for p in points_3d]
+
+                    # Invert y coordinates - DICOM y axis is inverted compared to image coordinates
+                    y_points = [rows - y for y in y_points]
+
+                    # Print first few points for debugging
+                    if len(contours_on_slice) > 0 and contour == contours_on_slice[0]:
+                        print(f"Structure {structure_name} at z={contour['z']:.1f}mm (slice z={current_z:.1f}mm):")
+                        for k in range(min(3, len(points_3d))):
+                            print(f"  3D: ({points_3d[k][0]:.1f}, {points_3d[k][1]:.1f}, {points_3d[k][2]:.1f}) → 2D: ({x_points[k]:.1f}, {y_points[k]:.1f})")
+
+                    # Create a closed polygon
+                    ax.fill(x_points, y_points,
+                           facecolor=contour['color'],
+                           alpha=0.3,
+                           edgecolor='black',
+                           linewidth=2,
+                           zorder=10)
+
+                    # Add a solid white outline inside the black outline for better visibility
+                    ax.plot(x_points + [x_points[0]], y_points + [y_points[0]],
+                           color='white',
+                           linewidth=1,
+                           zorder=11)
+
+                    # Mark that we've successfully rendered at least one contour
+                    structure_rendered = True
+
+                except Exception as e:
+                    print(f"Error rendering structure {structure_name}: {e}")
+                    continue
+
+            # Only show the structure in the legend if we actually rendered it
+            if structure_rendered:
                 # Add structure name label to image with vertical spacing
-                # Improved label visibility with contrasting outline
                 label_y = label_y_offset + (i * 25)  # Offset each label
                 ax.text(10, label_y, structure_name,
                        color='white', fontsize=14, fontweight='bold',
-                       bbox=dict(facecolor=color, alpha=0.7, edgecolor='black', pad=3))
+                       bbox=dict(facecolor=contour['color'], alpha=0.7, edgecolor='black', pad=3))
 
                 structures_shown.append(structure_name)
 
@@ -492,6 +607,119 @@ def render_dvh(structure_name, rs_data, rd_data):
     dvh_stats["v20"] = float(v20)
     
     return img_str, dvh_stats
+
+def render_3d_structures(ct_data, rs_data, selected_structures=None):
+    """Render 3D visualization of structures and return as base64 encoded image"""
+    if not rs_data or not ct_data:
+        return None
+    
+    # Create figure with 3D axes
+    fig = plt.figure(figsize=(10, 10), dpi=100)
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Get patient coordinate system from first CT slice
+    first_slice = ct_data[0]['instance']
+    last_slice = ct_data[-1]['instance']
+    z_min = first_slice.SliceLocation
+    z_max = last_slice.SliceLocation
+    
+    # Get x,y coordinates from first slice
+    rows = first_slice.Rows
+    cols = first_slice.Columns
+    pixel_spacing = first_slice.PixelSpacing
+    x_min = first_slice.ImagePositionPatient[0]
+    y_min = first_slice.ImagePositionPatient[1]
+    x_max = x_min + cols * pixel_spacing[1]
+    y_max = y_min + rows * pixel_spacing[0]
+    
+    # Set the axes limits
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(y_min, y_max)
+    ax.set_zlim(z_min, z_max)
+    
+    # Set labels
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    ax.set_zlabel('Z (mm)')
+    
+    # Add a title
+    ax.set_title('3D Structure Visualization')
+    
+    # Process selected structures
+    if not selected_structures:
+        # If no structures are selected, get all valid structures
+        all_structures = list_structures(rs_data)
+        selected_structures = [s['name'] for s in all_structures]
+    
+    # Track which structures were actually rendered
+    rendered_structures = []
+    
+    # Render each structure
+    for structure_name in selected_structures:
+        contour_data = get_contour_data(rs_data, structure_name)
+        if not contour_data or len(contour_data) == 0:
+            continue
+        
+        # Get the color for this structure
+        color = contour_data[0]['color']
+        
+        # Collect all contour points for this structure
+        all_points = []
+        for contour in contour_data:
+            points = contour['triplets']
+            
+            # Skip contours with too few points
+            if len(points) < 3:
+                continue
+                
+            # Add this contour
+            all_points.append(points)
+        
+        # If we have contours, create a 3D visualization
+        if all_points:
+            for points in all_points:
+                # Create a 3D polygon
+                x = points[:, 0]
+                y = points[:, 1]
+                z = points[:, 2]
+                
+                # Create a Poly3DCollection
+                verts = [list(zip(x, y, z))]
+                poly = Poly3DCollection(verts, alpha=0.5, facecolor=color, edgecolor='black')
+                ax.add_collection3d(poly)
+            
+            # Add this structure to the rendered list
+            rendered_structures.append(structure_name)
+    
+    # Add a legend for the structures
+    if rendered_structures:
+        # Create proxy artists for the legend
+        proxies = []
+        for structure_name in rendered_structures:
+            # Find the color for this structure
+            color = None
+            for contour in get_contour_data(rs_data, structure_name):
+                color = contour['color']
+                break
+            
+            if color:
+                proxy = plt.Rectangle((0, 0), 1, 1, fc=color)
+                proxies.append(proxy)
+        
+        # Add the legend
+        ax.legend(proxies, rendered_structures, loc='upper right')
+    
+    # Save figure to BytesIO
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format='png', bbox_inches='tight')
+    plt.close(fig)
+    
+    # Encode the image to base64
+    buf.seek(0)
+    img_str = base64.b64encode(buf.read()).decode('utf-8')
+    
+    return img_str, rendered_structures
 
 def get_patient_info(ct_data):
     """Get patient information from CT data"""
@@ -665,16 +893,61 @@ def api_dvh():
     if not rs_data or not rd_data:
         return jsonify({"error": "Missing structure or dose data"}), 400
     
-    # Render DVH
-    img_str, dvh_stats = render_dvh(structure_name, rs_data, rd_data)
+    try:
+        # Render DVH with error handling
+        img_str, dvh_stats = render_dvh(structure_name, rs_data, rd_data)
+        
+        if img_str is None:
+            return jsonify({"error": f"Could not calculate DVH for {structure_name}"}), 400
+        
+        return jsonify({
+            "image": img_str,
+            "statistics": dvh_stats
+        })
+    except Exception as e:
+        # Graceful error handling with specific message
+        error_msg = str(e)
+        print(f"DVH calculation error for {structure_name}: {error_msg}")
+        return jsonify({
+            "error": f"Error calculating DVH for {structure_name}. The structure may be missing required data or have an invalid format."
+        }), 400
+
+@app.route('/api/3d', methods=['POST'])
+def api_3d():
+    """API endpoint to get a 3D visualization of structures"""
+    data = request.json
     
-    if img_str is None:
-        return jsonify({"error": f"Could not calculate DVH for {structure_name}"}), 400
+    # Extract parameters
+    patient_id = data.get('patient_id')
+    selected_structures = data.get('structures', [])
     
-    return jsonify({
-        "image": img_str,
-        "statistics": dvh_stats
-    })
+    # Load DICOM data
+    patient_dir = os.path.join(CONFIG['data_dir'], patient_id)
+    ct_data = load_ct_files(patient_dir)
+    rs_data = load_structure_set(patient_dir)
+    
+    # Check if we have structure data
+    if not rs_data or not ct_data:
+        return jsonify({"error": "Missing CT or structure data"}), 400
+    
+    try:
+        # Render 3D visualization
+        img_str, structures_shown = render_3d_structures(ct_data, rs_data, selected_structures)
+        
+        if img_str is None:
+            return jsonify({"error": "Could not render 3D structures"}), 400
+        
+        return jsonify({
+            "image": img_str,
+            "structures_shown": structures_shown
+        })
+    except Exception as e:
+        # Graceful error handling
+        error_msg = str(e)
+        print(f"3D rendering error: {error_msg}")
+        return jsonify({
+            "error": f"Error rendering 3D structures: {error_msg}"
+        }), 400
 
 @app.errorhandler(404)
 def page_not_found(e):

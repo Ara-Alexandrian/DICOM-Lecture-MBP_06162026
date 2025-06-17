@@ -18,6 +18,8 @@ const state = {
     preloadComplete: false, // Flag for preload completion
     lastRequestTime: 0, // Timestamp of the last slice request (for handling race conditions)
     usePreloading: true, // Flag to toggle preloading behavior
+    structureToggleInProgress: false, // Flag to prevent scrolling during structure toggle
+    scrollTimeout: null, // For debouncing wheel events
 };
 
 // DOM elements
@@ -79,6 +81,16 @@ const elements = {
     imageLoading: document.getElementById('image-loading'),
     onDemandIndicator: document.getElementById('on-demand-indicator'),
     dvhLoading: document.getElementById('dvh-loading'),
+
+    // 3D elements
+    renderBtn: document.getElementById('render-3d'),
+    threedContainer: document.getElementById('3d-container'),
+    threedImage: document.getElementById('3d-image'),
+    threedLoading: document.getElementById('3d-loading'),
+    threedInfo: document.getElementById('3d-info'),
+    threedStructuresList: document.getElementById('3d-structures-list'),
+    threedAvailable: document.getElementById('3d-available'),
+    threedUnavailable: document.getElementById('3d-unavailable'),
     
     // Breadcrumbs
     patientBreadcrumb: document.getElementById('patient-breadcrumb'),
@@ -203,6 +215,9 @@ function initializeEventListeners() {
 
     // DVH structure selection
     elements.dvhStructure.addEventListener('change', handleDvhStructureChange);
+
+    // 3D rendering button
+    document.getElementById('render-3d').addEventListener('click', handle3DRender);
 
     // Slice navigation buttons
     elements.prevSlice.addEventListener('click', handlePrevSlice);
@@ -398,6 +413,9 @@ function updatePatientUI(patientData) {
         elements.dvhAvailable.classList.add('d-none');
         elements.dvhUnavailable.classList.remove('d-none');
     }
+
+    // Update 3D panel
+    update3DPanel();
     
     // Show control panels
     elements.patientInfoPanel.classList.remove('d-none');
@@ -888,6 +906,9 @@ function handleDoseColormapChange() {
 
 // Handle structure toggle
 function handleStructureToggle(event) {
+    // Set the structureToggleInProgress flag to prevent scrolling
+    state.structureToggleInProgress = true;
+
     const structureName = event.target.dataset.name;
 
     if (event.target.checked) {
@@ -901,20 +922,53 @@ function handleStructureToggle(event) {
     // Clear the cache when structures change
     state.sliceCache = {};
 
-    // If we've already preloaded, start preloading again in the background
-    if (state.preloadComplete) {
-        state.preloadComplete = false;
-        preloadSlices().then(() => {
-            // When preloading is done, update the current view
-            updateSliceView();
-        });
-    } else {
-        updateSliceView();
-    }
+    // Force preloading to stop by setting flag to false
+    const wasPreloading = state.preloadComplete;
+    state.preloadComplete = false;
+
+    // Update the current slice immediately to show changes
+    showLoading(true);
+
+    // Immediately load the current slice to show the structure change
+    loadSlice(state.sliceIndex).then(data => {
+        // Update the display with the new slice that includes structure changes
+        const currentSliceIdx = state.sliceIndex;
+        elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
+        elements.dicomImage.style.opacity = 0;
+
+        // Use a timeout to ensure the fade out is visible
+        setTimeout(() => {
+            elements.dicomImage.src = `data:image/png;base64,${data.image}`;
+            elements.dicomImage.style.opacity = 1;
+            updateSliceInfo(currentSliceIdx, data);
+
+            // Hide loading indicator
+            showLoading(false);
+
+            // Re-enable scrolling after the current slice is updated
+            setTimeout(() => {
+                // Reset the structure toggle flag to allow scrolling again
+                state.structureToggleInProgress = false;
+
+                // If we were preloading before, restart preloading in the background
+                if (wasPreloading && state.usePreloading) {
+                    preloadSlices();
+                }
+            }, 200); // Short delay to prevent immediate scrolling
+        }, 50);
+    }).catch(error => {
+        console.error('Error updating slice after structure toggle:', error);
+        showLoading(false);
+        // Make sure to reset the flag even on error
+        state.structureToggleInProgress = false;
+    });
 }
 
 // Handle toggle all structures
 function handleToggleAllStructures() {
+    // Set the structureToggleInProgress flag to prevent scrolling
+    state.structureToggleInProgress = true;
+
     const checkAll = elements.toggleAllStructures.checked;
 
     // Update all checkboxes
@@ -935,16 +989,46 @@ function handleToggleAllStructures() {
     // Clear the cache when structures change
     state.sliceCache = {};
 
-    // If we've already preloaded, start preloading again in the background
-    if (state.preloadComplete) {
-        state.preloadComplete = false;
-        preloadSlices().then(() => {
-            // When preloading is done, update the current view
-            updateSliceView();
-        });
-    } else {
-        updateSliceView();
-    }
+    // Force preloading to stop by setting flag to false
+    const wasPreloading = state.preloadComplete;
+    state.preloadComplete = false;
+
+    // Update the current slice immediately to show changes
+    showLoading(true);
+
+    // Immediately load the current slice to show the structure change
+    loadSlice(state.sliceIndex).then(data => {
+        // Update the display with the new slice that includes structure changes
+        const currentSliceIdx = state.sliceIndex;
+        elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
+        elements.dicomImage.style.opacity = 0;
+
+        // Use a timeout to ensure the fade out is visible
+        setTimeout(() => {
+            elements.dicomImage.src = `data:image/png;base64,${data.image}`;
+            elements.dicomImage.style.opacity = 1;
+            updateSliceInfo(currentSliceIdx, data);
+
+            // Hide loading indicator
+            showLoading(false);
+
+            // Re-enable scrolling after the current slice is updated
+            setTimeout(() => {
+                // Reset the structure toggle flag to allow scrolling again
+                state.structureToggleInProgress = false;
+
+                // If we were preloading before, restart preloading in the background
+                if (wasPreloading && state.usePreloading) {
+                    preloadSlices();
+                }
+            }, 200); // Short delay to prevent immediate scrolling
+        }, 50);
+    }).catch(error => {
+        console.error('Error updating slice after toggling all structures:', error);
+        showLoading(false);
+        // Make sure to reset the flag even on error
+        state.structureToggleInProgress = false;
+    });
 }
 
 // Handle DVH structure change
@@ -1097,14 +1181,29 @@ function applyImageTransform() {
 function handleMouseWheel(event) {
     // Prevent default scrolling
     event.preventDefault();
-    
-    // Change slice based on wheel direction
-    if (event.deltaY < 0) {
-        // Scroll up, go to previous slice
-        handlePrevSlice();
-    } else {
-        // Scroll down, go to next slice
-        handleNextSlice();
+
+    // If structure toggle is in progress, don't allow scrolling
+    if (state.structureToggleInProgress) {
+        console.log('Ignoring scroll during structure toggle');
+        return;
+    }
+
+    // Create a debounced version of the scroll handler
+    // This prevents too many slice changes in quick succession
+    if (!state.scrollTimeout) {
+        // Change slice based on wheel direction
+        if (event.deltaY < 0) {
+            // Scroll up, go to previous slice
+            handlePrevSlice();
+        } else {
+            // Scroll down, go to next slice
+            handleNextSlice();
+        }
+
+        // Set a timeout to prevent rapid scrolling
+        state.scrollTimeout = setTimeout(() => {
+            state.scrollTimeout = null;
+        }, 50); // 50ms debounce
     }
 }
 
@@ -1227,6 +1326,77 @@ function setupTouchEvents() {
     
     function onTouchEnd(event) {
         event.preventDefault();
+    }
+}
+
+// Handle 3D structure rendering
+async function handle3DRender() {
+    if (!state.patientId) return;
+
+    // Get currently selected structures
+    const selectedStructures = state.selectedStructures;
+
+    // If no structures are selected, show an alert
+    if (selectedStructures.length === 0) {
+        alert('Please select at least one structure to render in 3D.');
+        return;
+    }
+
+    // Show loading indicator
+    elements.threedContainer.classList.remove('d-none');
+    elements.threedLoading.classList.remove('d-none');
+    elements.threedInfo.classList.add('d-none');
+
+    try {
+        const response = await fetch('/api/3d', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                patient_id: state.patientId,
+                structures: selectedStructures
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to render 3D view: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+
+        // Hide loading
+        elements.threedLoading.classList.add('d-none');
+
+        // Update image and info
+        elements.threedImage.src = `data:image/png;base64,${data.image}`;
+
+        // Update structures list
+        elements.threedStructuresList.innerHTML = '';
+        data.structures_shown.forEach(structure => {
+            elements.threedStructuresList.innerHTML += `
+                <li class="list-group-item">${structure}</li>
+            `;
+        });
+
+        // Show info
+        elements.threedInfo.classList.remove('d-none');
+    } catch (error) {
+        console.error('Error rendering 3D view:', error);
+        alert('Error rendering 3D view. Please try again.');
+        elements.threedLoading.classList.add('d-none');
+    }
+}
+
+// Update 3D panel availability
+function update3DPanel() {
+    // Show/hide based on whether we have structures
+    if (state.patientId && document.querySelectorAll('.structure-checkbox').length > 0) {
+        elements.threedAvailable.classList.remove('d-none');
+        elements.threedUnavailable.classList.add('d-none');
+    } else {
+        elements.threedAvailable.classList.add('d-none');
+        elements.threedUnavailable.classList.remove('d-none');
     }
 }
 
