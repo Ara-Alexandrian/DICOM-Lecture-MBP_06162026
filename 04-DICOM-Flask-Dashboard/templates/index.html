@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RT DICOM Viewer</title>
+    
+    <!-- Favicon -->
+    <link rel="icon" href="{{ url_for('static', filename='img/favicon.ico') }}" type="image/x-icon">
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    
+    <!-- noUiSlider for range sliders -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider@14.6.3/distribute/nouislider.min.css">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <div class="col-lg-3 col-xl-2 sidebar">
+                <div class="sidebar-header">
+                    <h3><i class="fas fa-radiation"></i> RT DICOM Viewer</h3>
+                </div>
+                
+                <div class="sidebar-content">
+                    <!-- Patient Selection -->
+                    <div class="control-group">
+                        <h5>Patient Selection</h5>
+                        <select id="patient-select" class="form-select">
+                            <option value="">Select Patient</option>
+                            {% for patient in patients %}
+                            <option value="{{ patient }}">{{ patient }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    
+                    <!-- Patient Info (Hidden until patient selected) -->
+                    <div id="patient-info-panel" class="control-group d-none">
+                        <h5 data-bs-toggle="collapse" data-bs-target="#patient-info-collapse" role="button" aria-expanded="false">
+                            <i class="fas fa-chevron-down"></i> Patient Information
+                        </h5>
+                        <div id="patient-info-collapse" class="collapse">
+                            <table class="table table-sm table-dark">
+                                <tbody id="patient-info-table">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Slice Navigation -->
+                    <div id="slice-nav-panel" class="control-group d-none">
+                        <h5>Slice Navigation</h5>
+                        <div class="mb-3">
+                            <div id="slice-slider" class="slider-colored"></div>
+                            <div class="d-flex justify-content-between">
+                                <small id="slice-min">0</small>
+                                <small id="slice-current">0</small>
+                                <small id="slice-max">0</small>
+                            </div>
+                        </div>
+                        <div class="mb-3 text-center">
+                            <div class="btn-group" role="group">
+                                <button id="prev-slice" class="btn btn-outline-primary btn-sm">
+                                    <i class="fas fa-chevron-left"></i>
+                                </button>
+                                <button id="play-slices" class="btn btn-outline-primary btn-sm">
+                                    <i class="fas fa-play"></i>
+                                </button>
+                                <button id="next-slice" class="btn btn-outline-primary btn-sm">
+                                    <i class="fas fa-chevron-right"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="toggle-preload" checked>
+                                <label class="form-check-label" for="toggle-preload">
+                                    Preload All Slices
+                                </label>
+                            </div>
+                            <small class="text-muted d-block mt-1">
+                                Toggle preloading to compare performance. When off, slices load on-demand.
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <!-- Window/Level Controls -->
+                    <div id="window-level-panel" class="control-group d-none">
+                        <h5 data-bs-toggle="collapse" data-bs-target="#window-level-collapse" role="button" aria-expanded="true">
+                            <i class="fas fa-chevron-down"></i> Window/Level
+                        </h5>
+                        <div id="window-level-collapse" class="collapse show">
+                            <div class="mb-3">
+                                <label class="form-label">Preset</label>
+                                <select id="window-preset" class="form-select form-select-sm">
+                                    <option value="Soft Tissue">Soft Tissue</option>
+                                    <option value="Lung">Lung</option>
+                                    <option value="Bone">Bone</option>
+                                    <option value="Brain">Brain</option>
+                                    <option value="Custom">Custom</option>
+                                </select>
+                            </div>
+                            <div id="custom-window-controls" class="d-none">
+                                <div class="mb-3">
+                                    <label class="form-label">Window Center: <span id="window-center-value">40</span></label>
+                                    <div id="window-center-slider" class="slider-colored"></div>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Window Width: <span id="window-width-value">400</span></label>
+                                    <div id="window-width-slider" class="slider-colored"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Structure Controls -->
+                    <div id="structure-panel" class="control-group d-none">
+                        <h5 data-bs-toggle="collapse" data-bs-target="#structure-collapse" role="button" aria-expanded="true">
+                            <i class="fas fa-chevron-down"></i> Structures
+                        </h5>
+                        <div id="structure-collapse" class="collapse show">
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="toggle-all-structures">
+                                    <label class="form-check-label" for="toggle-all-structures">
+                                        Toggle All
+                                    </label>
+                                </div>
+                                <div id="structure-list" class="structure-list">
+                                    <!-- Structures will be dynamically populated here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Dose Controls -->
+                    <div id="dose-panel" class="control-group d-none">
+                        <h5 data-bs-toggle="collapse" data-bs-target="#dose-collapse" role="button" aria-expanded="true">
+                            <i class="fas fa-chevron-down"></i> Dose Display
+                        </h5>
+                        <div id="dose-collapse" class="collapse show">
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="toggle-dose">
+                                    <label class="form-check-label" for="toggle-dose">
+                                        Show Dose
+                                    </label>
+                                </div>
+                            </div>
+                            <div id="dose-controls" class="d-none">
+                                <div class="mb-3">
+                                    <label class="form-label">Opacity: <span id="dose-opacity-value">0.5</span></label>
+                                    <div id="dose-opacity-slider" class="slider-colored"></div>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Colormap</label>
+                                    <select id="dose-colormap" class="form-select form-select-sm">
+                                        <option value="jet">Jet</option>
+                                        <option value="hot">Hot</option>
+                                        <option value="plasma">Plasma</option>
+                                        <option value="viridis">Viridis</option>
+                                        <option value="turbo">Turbo</option>
+                                        <option value="rainbow">Rainbow</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Main Content Area -->
+            <div class="col-lg-9 col-xl-10 main-content">
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <nav aria-label="breadcrumb">
+                            <ol class="breadcrumb">
+                                <li class="breadcrumb-item"><a href="#">Home</a></li>
+                                <li id="patient-breadcrumb" class="breadcrumb-item d-none">Patient</li>
+                                <li id="slice-breadcrumb" class="breadcrumb-item active d-none" aria-current="page">Slice</li>
+                            </ol>
+                        </nav>
+                    </div>
+                </div>
+                
+                <!-- Initial Message -->
+                <div id="initial-message" class="row align-items-center justify-content-center h-100">
+                    <div class="col-md-6 text-center initial-message">
+                        <div class="card">
+                            <div class="card-body">
+                                <h3><i class="fas fa-radiation fa-spin text-warning"></i> RT DICOM Viewer</h3>
+                                <p class="lead">Select a patient from the sidebar to begin.</p>
+                                <p>This interactive viewer allows you to explore radiotherapy DICOM files including:</p>
+                                <ul class="text-start">
+                                    <li>CT images with custom window/level</li>
+                                    <li>RT Structure Sets with interactive overlays</li>
+                                    <li>RT Dose distributions with customizable colormaps</li>
+                                    <li>DVH analysis for any structure</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Main Viewer (Hidden until patient loaded) -->
+                <div id="main-viewer" class="row d-none">
+                    <!-- Left Panel: Image Display -->
+                    <div class="col-md-8 viewer-section">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span id="slice-info">CT Slice</span>
+                                <div class="btn-group" role="group">
+                                    <button id="zoom-in" class="btn btn-sm btn-outline-secondary">
+                                        <i class="fas fa-search-plus"></i>
+                                    </button>
+                                    <button id="zoom-out" class="btn btn-sm btn-outline-secondary">
+                                        <i class="fas fa-search-minus"></i>
+                                    </button>
+                                    <button id="pan-tool" class="btn btn-sm btn-outline-secondary">
+                                        <i class="fas fa-hand-paper"></i>
+                                    </button>
+                                    <button id="reset-view" class="btn btn-sm btn-outline-secondary">
+                                        <i class="fas fa-expand-arrows-alt"></i>
+                                    </button>
+                                    <button id="screenshot" class="btn btn-sm btn-outline-secondary">
+                                        <i class="fas fa-camera"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body text-center p-0 position-relative">
+                                <div id="image-container" class="image-container">
+                                    <img id="dicom-image" src="" class="img-fluid" alt="DICOM Image">
+                                    <div id="image-loading" class="image-loading d-none">
+                                        <div class="spinner-border text-light" role="status">
+                                            <span class="visually-hidden">Loading...</span>
+                                        </div>
+                                        <div id="on-demand-indicator" class="d-none">
+                                            <div class="bg-dark text-light p-2 rounded mt-3 text-center">
+                                                <small>Loading on-demand</small>
+                                                <div class="progress mt-1" style="height: 4px; width: 120px;">
+                                                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning" style="width: 100%"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="preload-container" class="preload-container d-none">
+                                        <div class="preload-content">
+                                            <h4>Preloading Slices</h4>
+                                            <div class="progress mb-3">
+                                                <div id="preload-progress" class="progress-bar progress-bar-striped progress-bar-animated"
+                                                     role="progressbar" style="width: 0%"></div>
+                                            </div>
+                                            <p id="preload-status">0% Complete</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Right Panel: Data Panels -->
+                    <div class="col-md-4 viewer-section">
+                        <div class="card">
+                            <div class="card-header">
+                                <ul class="nav nav-tabs card-header-tabs" id="viewer-tabs" role="tablist">
+                                    <li class="nav-item">
+                                        <a class="nav-link active" id="info-tab" data-bs-toggle="tab" href="#info-panel" role="tab">Info</a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link" id="plan-tab" data-bs-toggle="tab" href="#plan-panel" role="tab">Plan</a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link" id="dvh-tab" data-bs-toggle="tab" href="#dvh-panel" role="tab">DVH</a>
+                                    </li>
+                                    <li class="nav-item">
+                                        <a class="nav-link" id="3d-tab" data-bs-toggle="tab" href="#3d-panel" role="tab">3D</a>
+                                    </li>
+                                </ul>
+                            </div>
+                            <div class="card-body">
+                                <div class="tab-content">
+                                    <!-- Info Panel -->
+                                    <div class="tab-pane fade show active" id="info-panel" role="tabpanel">
+                                        <h5>Patient Information</h5>
+                                        <table class="table table-striped">
+                                            <tbody id="info-patient-table">
+                                            </tbody>
+                                        </table>
+                                        
+                                        <h5>Image Information</h5>
+                                        <table class="table table-striped">
+                                            <tbody id="info-image-table">
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    
+                                    <!-- Plan Panel -->
+                                    <div class="tab-pane fade" id="plan-panel" role="tabpanel">
+                                        <div id="plan-available">
+                                            <h5>RT Plan Information</h5>
+                                            <table class="table table-striped">
+                                                <tbody id="plan-info-table">
+                                                </tbody>
+                                            </table>
+                                            
+                                            <h5>Beams</h5>
+                                            <table class="table table-striped">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Name</th>
+                                                        <th>Type</th>
+                                                        <th>Radiation</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="plan-beams-table">
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <div id="plan-unavailable" class="d-none">
+                                            <div class="alert alert-info">
+                                                No RT Plan available for this patient.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- DVH Panel -->
+                                    <div class="tab-pane fade" id="dvh-panel" role="tabpanel">
+                                        <div id="dvh-available">
+                                            <div class="mb-3">
+                                                <label for="dvh-structure" class="form-label">Select Structure</label>
+                                                <select id="dvh-structure" class="form-select">
+                                                    <option value="">Select a structure</option>
+                                                </select>
+                                            </div>
+                                            <div id="dvh-container" class="text-center mb-3 d-none">
+                                                <img id="dvh-image" src="" class="img-fluid" alt="DVH">
+                                                <div id="dvh-loading" class="image-loading d-none">
+                                                    <div class="spinner-border text-light" role="status">
+                                                        <span class="visually-hidden">Loading...</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div id="dvh-stats" class="d-none">
+                                                <h5>DVH Statistics</h5>
+                                                <table class="table table-striped">
+                                                    <tbody>
+                                                        <tr>
+                                                            <th>Min Dose</th>
+                                                            <td id="dvh-min">-</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Max Dose</th>
+                                                            <td id="dvh-max">-</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Mean Dose</th>
+                                                            <td id="dvh-mean">-</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>Median Dose</th>
+                                                            <td id="dvh-median">-</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>D95</th>
+                                                            <td id="dvh-d95">-</td>
+                                                        </tr>
+                                                        <tr>
+                                                            <th>V20Gy</th>
+                                                            <td id="dvh-v20">-</td>
+                                                        </tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                        <div id="dvh-unavailable" class="d-none">
+                                            <div class="alert alert-info">
+                                                Dose data and/or structures are required for DVH calculation.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 3D Panel -->
+                                    <div class="tab-pane fade" id="3d-panel" role="tabpanel">
+                                        <div class="alert alert-info">
+                                            3D visualization is available in the pro version.
+                                        </div>
+                                        <div class="text-center">
+                                            <img src="{{ url_for('static', filename='img/3d-preview.jpg') }}" 
+                                                 class="img-fluid rounded" 
+                                                 alt="3D Preview">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Bootstrap Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    
+    <!-- noUiSlider for range sliders -->
+    <script src="https://cdn.jsdelivr.net/npm/nouislider@14.6.3/distribute/nouislider.min.js"></script>
+    
+    <!-- Custom JavaScript -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

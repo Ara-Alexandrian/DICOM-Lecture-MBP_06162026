@@ -1,0 +1,38 @@
+**/.claude/settings.local.json
+
+# Ignore DICOM data files
+data/test-cases/*/CT.*
+data/test-cases/*/RD.*
+data/test-cases/*/RP.*
+data/test-cases/*/RS.*
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
