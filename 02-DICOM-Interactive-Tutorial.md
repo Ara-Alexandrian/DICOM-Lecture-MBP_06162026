@@ -49,13 +49,22 @@ print(f"Total slices: {len(ct_files)}")
 ```python
 # Function to convert pixel data to Hounsfield Units (HU)
 def get_hu_values(ct_slice):
+    """
+    Convert CT pixel data to Hounsfield Units using the rescale slope and intercept
+
+    Hounsfield Units (HU) are a standardized scale for reporting CT numbers:
+    - Air: approximately -1000 HU
+    - Water: 0 HU
+    - Soft tissue: 20-100 HU
+    - Bone: 300-1900 HU
+    """
     # Get pixel values
     pixel_array = ct_slice.pixel_array
-    
+
     # Convert to HU using slope and intercept
     intercept = ct_slice.RescaleIntercept
     slope = ct_slice.RescaleSlope
-    
+
     hu_values = pixel_array * slope + intercept
     return hu_values
 
@@ -63,13 +72,23 @@ def get_hu_values(ct_slice):
 hu_image = get_hu_values(ct_slice)
 
 # Set window/level for better visualization (lung window)
-window_center = -600  # Center of the window
-window_width = 1500   # Width of the window
+window_center = -600  # Center of the window in HU
+window_width = 1500   # Width of the window in HU
 
 # Apply window/level
+# This controls the brightness/contrast by limiting displayed HU range:
+# - Values below (window_center - window_width/2) appear black
+# - Values above (window_center + window_width/2) appear white
+# - Values in between are mapped to grayscale
 min_value = window_center - window_width/2
 max_value = window_center + window_width/2
 hu_image_windowed = np.clip(hu_image, min_value, max_value)
+
+# Common window/level presets:
+# - Lung: -600/1500 (shows air-filled structures)
+# - Soft tissue: 40/400 (optimal for organs)
+# - Bone: 500/2000 (best for visualizing bones)
+# - Brain: 40/80 (for brain tissue contrast)
 
 # Display image
 plt.figure(figsize=(10, 10))
@@ -85,17 +104,32 @@ plt.show()
 ```python
 # Function to display DICOM tags in a user-friendly way
 def explore_dicom_tags(ds, max_depth=2, current_depth=0, prefix=''):
-    """Recursively explore DICOM tags with controlled depth"""
+    """
+    Recursively explore DICOM tags with controlled depth
+
+    Parameters:
+        ds: The DICOM dataset to explore
+        max_depth: Maximum recursion depth for nested sequences (default=2)
+                   Controls how deep to go into nested DICOM sequences:
+                   - 0: Only show top-level tags
+                   - 1: Show one level of sequence items
+                   - 2+: Show deeper nested sequences
+        current_depth: Current recursion depth (used internally)
+        prefix: String prefix for indentation (used internally)
+
+    Returns:
+        List of formatted tag descriptions
+    """
     tags_info = []
-    
+
     # Skip Pixel Data because it's too large
     skip_tags = [(0x7FE0, 0x0010)]  # Pixel Data
-    
+
     for elem in ds:
         if elem.tag in skip_tags:
             tags_info.append(f"{prefix}{elem.tag}: [Pixel Data]")
             continue
-            
+
         # Format the element
         if elem.VR == "SQ":  # Sequence
             tags_info.append(f"{prefix}{elem.tag} {elem.name}: Sequence with {len(elem.value)} item(s)")
@@ -108,7 +142,7 @@ def explore_dicom_tags(ds, max_depth=2, current_depth=0, prefix=''):
                 tags_info.append(f"{prefix}{elem.tag} {elem.name}: {elem.repval}")
             else:
                 tags_info.append(f"{prefix}{elem.tag} {elem.name}: {elem.repval}")
-    
+
     return tags_info
 
 # Display the first 20 tags
@@ -350,65 +384,77 @@ else:
 ```python
 # Function to calculate a DVH for a structure
 def calculate_dvh(structure_name, rs, rd):
-    """Calculate a simple DVH for a structure"""
+    """
+    Calculate a simple DVH (Dose Volume Histogram) for a structure
+
+    A DVH summarizes the 3D dose distribution in a structure into a 2D graph:
+    - X-axis: Dose (Gy)
+    - Y-axis: Volume percentage of the structure
+    - The curve shows what percentage of the structure volume receives at least a certain dose
+
+    The calculation process:
+    1. Create a binary mask of the structure within the dose grid
+    2. Extract dose values that fall within this mask
+    3. Calculate the cumulative histogram of these dose values
+    """
     # Get structure contours
     contour_data = get_contour_data(rs, structure_name)
     if not contour_data:
         return None
-    
+
     # Create a 3D mask for the structure
     # First, get the dose grid dimensions and parameters
     dose_rows = rd.Rows
     dose_cols = rd.Columns
     dose_frames = rd.NumberOfFrames if hasattr(rd, 'NumberOfFrames') else 1
-    
+
     # Get dose grid coordinates
     dose_x = np.arange(dose_cols) * rd.PixelSpacing[1] + rd.ImagePositionPatient[0]
     dose_y = np.arange(dose_rows) * rd.PixelSpacing[0] + rd.ImagePositionPatient[1]
     dose_z = []
-    
+
     # For 3D dose, get Z coordinates from grid frame offset vector
     if hasattr(rd, 'GridFrameOffsetVector'):
         for i in range(dose_frames):
             dose_z.append(rd.ImagePositionPatient[2] + rd.GridFrameOffsetVector[i])
     else:
         dose_z = [rd.ImagePositionPatient[2]]
-    
+
     # Create an empty mask
     structure_mask = np.zeros((dose_frames, dose_rows, dose_cols), dtype=bool)
-    
+
     # Fill the mask for each contour on each slice
     for contour in contour_data:
         # Find the closest Z slice
         z_coord = contour['z']
         closest_z_idx = np.argmin(np.abs(np.array(dose_z) - z_coord))
-        
+
         # Get x,y points
         points = contour['triplets'][:, :2]
-        
+
         # Create a 2D mask for this contour
         mask_2d = np.zeros((dose_rows, dose_cols), dtype=bool)
-        
+
         # Convert points to pixel coordinates
         pixel_points = np.zeros_like(points)
         pixel_points[:, 0] = np.interp(points[:, 0], dose_x, np.arange(dose_cols))
         pixel_points[:, 1] = np.interp(points[:, 1], dose_y, np.arange(dose_rows))
-        
+
         # Create a polygon and get a mask
         from matplotlib.path import Path
         poly_path = Path(pixel_points)
-        
+
         # Create a grid of points
         x, y = np.meshgrid(np.arange(dose_cols), np.arange(dose_rows))
         grid_points = np.vstack((x.flatten(), y.flatten())).T
-        
+
         # Check which points are inside the polygon
         mask = poly_path.contains_points(grid_points)
         mask_2d = mask.reshape(dose_rows, dose_cols)
-        
+
         # Add this to the 3D mask
         structure_mask[closest_z_idx] = np.logical_or(structure_mask[closest_z_idx], mask_2d)
-    
+
     # Get the dose values
     dose_values = np.zeros((dose_frames, dose_rows, dose_cols))
     for i in range(dose_frames):
@@ -416,10 +462,10 @@ def calculate_dvh(structure_name, rs, rd):
             dose_values[i] = rd.pixel_array[i] * rd.DoseGridScaling
         else:
             dose_values[i] = rd.pixel_array * rd.DoseGridScaling
-    
+
     # Extract dose values within the structure
     structure_doses = dose_values[structure_mask]
-    
+
     return structure_doses
 
 # Calculate DVH for a structure (e.g., "PTV" or "BODY")
@@ -430,7 +476,7 @@ if structure_doses is not None:
     # Create the DVH
     hist, bin_edges = np.histogram(structure_doses, bins=100, range=(0, np.max(structure_doses)))
     dvh = 1.0 - np.cumsum(hist) / float(len(structure_doses))
-    
+
     # Plot the DVH
     plt.figure(figsize=(10, 6))
     plt.plot(bin_edges[1:], dvh * 100, 'b-', linewidth=2)
@@ -441,21 +487,25 @@ if structure_doses is not None:
     plt.xlim([0, np.max(structure_doses)])
     plt.ylim([0, 100])
     plt.show()
-    
+
     # Print some DVH statistics
     print(f"DVH Statistics for {structure_for_dvh}:")
     print(f"Min Dose: {np.min(structure_doses):.2f} Gy")
     print(f"Max Dose: {np.max(structure_doses):.2f} Gy")
     print(f"Mean Dose: {np.mean(structure_doses):.2f} Gy")
     print(f"Median Dose: {np.median(structure_doses):.2f} Gy")
-    
+
     # D95 (dose to 95% of the volume)
+    # This is the dose that 95% of the structure volume receives at least
+    # Important for target coverage evaluation - higher is better for targets
     sorted_doses = np.sort(structure_doses)
     d95_index = int(len(sorted_doses) * 0.05)  # 95% from the top
     d95 = sorted_doses[d95_index]
     print(f"D95: {d95:.2f} Gy")
-    
+
     # V20 (volume receiving 20 Gy or more)
+    # This is the percentage of the structure volume receiving at least 20 Gy
+    # Important for organ sparing - lower is better for healthy tissues
     v20 = np.sum(structure_doses >= 20.0) / len(structure_doses) * 100
     print(f"V20Gy: {v20:.2f}%")
 else:

@@ -127,9 +127,13 @@ body {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
-    transition: opacity 0.15s ease-in-out;
-    will-change: opacity;  /* Hint to the browser for optimization */
+    transition: opacity 0.15s ease-in-out, transform 0.15s ease-out;
+    will-change: opacity, transform;  /* Hint to the browser for optimization */
     transform: translateZ(0);  /* Force GPU acceleration for smoother transitions */
+    transform-origin: center center; /* Ensure consistent zoom behavior */
+    image-rendering: high-quality; /* Improve image quality */
+    position: relative; /* Allow precise positioning */
+    margin: auto; /* Center the image by default */
 }
 
 .image-loading, .preload-container {

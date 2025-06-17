@@ -10,6 +10,9 @@ This repository contains materials for a 30-minute radiotherapy DICOM workshop:
 2. **[02-DICOM-Interactive-Tutorial.md](02-DICOM-Interactive-Tutorial.md)** - Interactive Jupyter-style tutorial
 3. **[03-DICOM-Viewer-Streamlit.md](03-DICOM-Viewer-Streamlit.md)** - Streamlit application walkthrough
 4. **[dicom_viewer.py](dicom_viewer.py)** - Functional Streamlit DICOM viewer application
+5. **[04-DICOM-Flask-Dashboard](04-DICOM-Flask-Dashboard/)** - Flask web application for DICOM visualization
+
+> **Note:** The structure overlay functionality in the Flask Dashboard is currently experimental and may not render all structures correctly. If you need a fully working version for research or clinical purposes, please contact the author directly for assistance.
 
 ## Test Data
 
@@ -36,7 +39,6 @@ Or install dependencies directly:
 
 ```bash
 pip install -r requirements.txt
-pip install dicompyler dicompyler-core dvhanalytics
 ```
 
 ### Running the Jupyter Notebook
@@ -52,6 +54,16 @@ jupyter notebook 02-DICOM-Interactive-Tutorial.ipynb
 conda activate rt-dcm
 streamlit run dicom_viewer.py
 ```
+
+### Running the Flask Dashboard
+
+```bash
+conda activate rt-dcm
+cd 04-DICOM-Flask-Dashboard
+python app.py
+```
+
+Then open your browser to http://localhost:5001
 
 ## Workshop Sequence
 

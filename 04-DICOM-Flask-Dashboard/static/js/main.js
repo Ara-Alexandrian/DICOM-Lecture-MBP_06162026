@@ -20,6 +20,9 @@ const state = {
     usePreloading: true, // Flag to toggle preloading behavior
     structureToggleInProgress: false, // Flag to prevent scrolling during structure toggle
     scrollTimeout: null, // For debouncing wheel events
+    structureUpdateTimeout: null, // For debouncing structure updates
+    structureUpdateInProgress: false, // Flag to track structure updates
+    currentSliceUpdateTimeout: null, // For debouncing current slice updates
 };
 
 // DOM elements
@@ -526,7 +529,11 @@ async function preloadSlices() {
     elements.preloadContainer.classList.remove('d-none');
     state.preloadComplete = false;
     state.loadedSlices = 0;
-    state.sliceCache = {};
+
+    // Don't clear the cache - allow reusing already cached slices
+    if (!state.sliceCache) {
+        state.sliceCache = {};
+    }
 
     // Determine current slice index (center of volume or user selected)
     const currentSliceIdx = state.sliceIndex;
@@ -540,6 +547,44 @@ async function preloadSlices() {
     const batchSize = 5;
     const totalBatches = Math.ceil(sliceLoadOrder.length / batchSize);
 
+    // Determine total number of slices that need to be loaded
+    let totalSlicesToLoad = sliceLoadOrder.length;
+    let slicesAlreadyLoaded = 0;
+
+    // Check how many slices are already cached with current settings
+    sliceLoadOrder.forEach(sliceIdx => {
+        const cacheKey = getCacheKey(sliceIdx);
+        if (state.sliceCache[cacheKey]) {
+            slicesAlreadyLoaded++;
+            totalSlicesToLoad--;
+        }
+    });
+
+    // If all slices are already cached, we're done
+    if (slicesAlreadyLoaded === sliceLoadOrder.length) {
+        console.log('All slices already cached, preloading complete!');
+        state.preloadComplete = true;
+        state.loadedSlices = sliceLoadOrder.length;
+
+        // Update UI to show completion
+        elements.preloadProgress.style.width = '100%';
+        elements.preloadStatus.textContent = `100% Complete (${state.loadedSlices}/${state.sliceCount})`;
+
+        // Fade out the preload UI
+        elements.preloadContainer.style.transition = 'opacity 0.5s ease-out';
+        elements.preloadContainer.style.opacity = '0';
+
+        // Hide after transition completes
+        setTimeout(() => {
+            elements.preloadContainer.classList.add('d-none');
+            elements.preloadContainer.style.opacity = '1';
+        }, 500);
+
+        return;
+    }
+
+    console.log(`Preloading slices: ${slicesAlreadyLoaded} already cached, ${totalSlicesToLoad} to load`);
+
     try {
         for (let batch = 0; batch < totalBatches; batch++) {
             const batchPromises = [];
@@ -550,11 +595,23 @@ async function preloadSlices() {
                 if (batchIdx >= sliceLoadOrder.length) break;
 
                 const sliceIdx = sliceLoadOrder[batchIdx];
-                batchPromises.push(loadSlice(sliceIdx));
+
+                // Check if this slice is already cached with current settings
+                const cacheKey = getCacheKey(sliceIdx);
+                if (!state.sliceCache[cacheKey]) {
+                    batchPromises.push(loadSlice(sliceIdx));
+                } else {
+                    // Count already cached slices in our loaded count
+                    if (state.loadedSlices < slicesAlreadyLoaded + totalSlicesToLoad) {
+                        state.loadedSlices++;
+                    }
+                }
             }
 
             // Wait for all slices in the batch to load
-            await Promise.all(batchPromises);
+            if (batchPromises.length > 0) {
+                await Promise.all(batchPromises);
+            }
 
             // Update progress
             const progress = Math.min(100, Math.round((state.loadedSlices / state.sliceCount) * 100));
@@ -660,8 +717,14 @@ async function loadSlice(sliceIdx) {
 }
 
 // Generate a cache key for the current view settings
-function getCacheKey(sliceIdx) {
-    return `${state.patientId}_${sliceIdx}_${state.windowCenter}_${state.windowWidth}_${state.selectedStructures.join('_')}_${state.showDose}_${state.doseOpacity}_${state.doseColormap}`;
+function getCacheKey(sliceIdx, structureList) {
+    // If structureList is not provided, use the current selected structures
+    const structures = structureList || state.selectedStructures;
+
+    // Sort the structures to ensure consistent keys regardless of selection order
+    const sortedStructures = [...structures].sort();
+
+    return `${state.patientId}_${sliceIdx}_${state.windowCenter}_${state.windowWidth}_${sortedStructures.join('_')}_${state.showDose}_${state.doseOpacity}_${state.doseColormap}`;
 }
 
 // Update the slice view from cache or fetch
@@ -713,9 +776,22 @@ async function updateSliceView() {
 
         // Only update the UI if this is still the current slice
         if (currentSliceIdx === state.sliceIndex) {
+            // Enhanced image update with position stability
+            // First, store the current scroll position and image container dimensions
+            const imageContainer = elements.imageContainer;
+            const currentScrollTop = imageContainer.scrollTop;
+            const currentScrollLeft = imageContainer.scrollLeft;
+            const containerWidth = imageContainer.clientWidth;
+            const containerHeight = imageContainer.clientHeight;
+
             // Update image with an enhanced smooth fade effect
             elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
             elements.dicomImage.style.opacity = 0;
+
+            // Apply consistent image positioning
+            // We use fixed positioning to ensure stability between slices
+            elements.dicomImage.style.position = 'relative';
+            elements.dicomImage.style.transformOrigin = 'center center';
 
             // Create a new Image object to preload the next image
             const newImage = new Image();
@@ -728,6 +804,13 @@ async function updateSliceView() {
                 // Use requestAnimationFrame for smoother transition
                 requestAnimationFrame(() => {
                     elements.dicomImage.style.opacity = 1;
+
+                    // Apply the existing transform to maintain zoom and pan
+                    applyImageTransform();
+
+                    // Restore scroll position to ensure view stability
+                    imageContainer.scrollTop = currentScrollTop;
+                    imageContainer.scrollLeft = currentScrollLeft;
 
                     // Update all slice info
                     updateSliceInfo(currentSliceIdx, data);
@@ -743,6 +826,14 @@ async function updateSliceView() {
                 elements.dicomImage.src = newImage.src;
                 requestAnimationFrame(() => {
                     elements.dicomImage.style.opacity = 1;
+
+                    // Apply the existing transform to maintain zoom and pan
+                    applyImageTransform();
+
+                    // Restore scroll position to ensure view stability
+                    imageContainer.scrollTop = currentScrollTop;
+                    imageContainer.scrollLeft = currentScrollLeft;
+
                     updateSliceInfo(currentSliceIdx, data);
                 });
             }
@@ -904,14 +995,39 @@ function handleDoseColormapChange() {
     }
 }
 
-// Handle structure toggle
+// Handle structure toggle - COMPLETELY REWRITTEN FOR PERFORMANCE AND RELIABILITY
 function handleStructureToggle(event) {
+    // Prevent the default action to ensure we have full control
+    event.preventDefault();
+
     // Set the structureToggleInProgress flag to prevent scrolling
     state.structureToggleInProgress = true;
 
     const structureName = event.target.dataset.name;
+    const isChecked = event.target.checked;
 
-    if (event.target.checked) {
+    // Update the checkbox immediately for responsive UI
+    event.target.checked = isChecked;
+
+    // Log to console for debugging
+    console.log(`Structure toggle: ${structureName} ${isChecked ? 'ON' : 'OFF'}`);
+
+    // Use a debounced structure update to prevent rapid successive updates
+    // This prevents the continual slice calculation loop
+    if (state.structureUpdateTimeout) {
+        clearTimeout(state.structureUpdateTimeout);
+    }
+
+    // If another structure update is in progress, cancel it to avoid conflicts
+    if (state.structureUpdateInProgress) {
+        // Cancel any pending requests by updating timestamp
+        // This will make older requests be ignored when they complete
+        console.log('Cancelling previous structure update - new structure toggle detected');
+        state.lastRequestTime = Date.now();
+    }
+
+    // Update the selected structures list
+    if (isChecked) {
         if (!state.selectedStructures.includes(structureName)) {
             state.selectedStructures.push(structureName);
         }
@@ -919,116 +1035,265 @@ function handleStructureToggle(event) {
         state.selectedStructures = state.selectedStructures.filter(name => name !== structureName);
     }
 
-    // Clear the cache when structures change
-    state.sliceCache = {};
+    // Apply the structure change with debouncing
+    state.structureUpdateTimeout = setTimeout(() => {
+        // Flag that we're now processing a structure update
+        state.structureUpdateInProgress = true;
 
-    // Force preloading to stop by setting flag to false
-    const wasPreloading = state.preloadComplete;
-    state.preloadComplete = false;
-
-    // Update the current slice immediately to show changes
-    showLoading(true);
-
-    // Immediately load the current slice to show the structure change
-    loadSlice(state.sliceIndex).then(data => {
-        // Update the display with the new slice that includes structure changes
+        // Get the current slice index
         const currentSliceIdx = state.sliceIndex;
-        elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
-        elements.dicomImage.style.opacity = 0;
 
-        // Use a timeout to ensure the fade out is visible
-        setTimeout(() => {
-            elements.dicomImage.src = `data:image/png;base64,${data.image}`;
-            elements.dicomImage.style.opacity = 1;
-            updateSliceInfo(currentSliceIdx, data);
+        // Generate cache key based on current state including selected structures
+        const currentCacheKey = getCacheKey(currentSliceIdx);
 
-            // Hide loading indicator
-            showLoading(false);
+        // Check if we already have this view cached
+        const cachedSliceWithCurrentStructures = state.sliceCache[currentCacheKey];
 
-            // Re-enable scrolling after the current slice is updated
-            setTimeout(() => {
-                // Reset the structure toggle flag to allow scrolling again
-                state.structureToggleInProgress = false;
+        // If already cached, use it without loading from server
+        if (cachedSliceWithCurrentStructures) {
+            console.log(`Using cached slice with structure ${structureName} ${isChecked ? 'enabled' : 'disabled'}`);
 
-                // If we were preloading before, restart preloading in the background
-                if (wasPreloading && state.usePreloading) {
-                    preloadSlices();
+            // Update the display immediately from cache with smooth transition
+            elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
+            elements.dicomImage.style.opacity = 0;
+
+            requestAnimationFrame(() => {
+                elements.dicomImage.src = `data:image/png;base64,${cachedSliceWithCurrentStructures.image}`;
+                elements.dicomImage.style.opacity = 1;
+                updateSliceInfo(currentSliceIdx, cachedSliceWithCurrentStructures);
+
+                // Reset flags after a short delay to ensure UI has updated
+                setTimeout(() => {
+                    state.structureToggleInProgress = false;
+                    state.structureUpdateInProgress = false;
+                    console.log('Structure toggle complete (from cache)');
+                }, 50);
+            });
+
+            return;
+        }
+
+        // Need to fetch the image from server
+        console.log(`Fetching slice with structure ${structureName} ${isChecked ? 'enabled' : 'disabled'}`);
+        showLoading(true);
+
+        // Record the request time to handle race conditions
+        const requestTime = Date.now();
+        state.lastRequestTime = requestTime;
+
+        // Single shot loading of the current slice only
+        loadSlice(currentSliceIdx)
+            .then(data => {
+                // Only process if this is still the most recent request
+                if (requestTime !== state.lastRequestTime) {
+                    console.log('Ignoring outdated structure toggle request');
+                    return;
                 }
-            }, 200); // Short delay to prevent immediate scrolling
-        }, 50);
-    }).catch(error => {
-        console.error('Error updating slice after structure toggle:', error);
-        showLoading(false);
-        // Make sure to reset the flag even on error
-        state.structureToggleInProgress = false;
-    });
+
+                console.log('Structure toggle slice loaded successfully');
+
+                // Update the display with smooth transition
+                elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
+                elements.dicomImage.style.opacity = 0;
+
+                // Use requestAnimationFrame for smoother UI updates
+                requestAnimationFrame(() => {
+                    // Update the image
+                    elements.dicomImage.src = `data:image/png;base64,${data.image}`;
+                    elements.dicomImage.style.opacity = 1;
+                    updateSliceInfo(currentSliceIdx, data);
+
+                    // Hide loading indicator
+                    showLoading(false);
+
+                    // Reset the flags after a short delay to ensure UI has updated
+                    setTimeout(() => {
+                        state.structureToggleInProgress = false;
+                        state.structureUpdateInProgress = false;
+                        console.log('Structure toggle complete (from server)');
+                    }, 50);
+                });
+            })
+            .catch(error => {
+                // Only handle errors for the most recent request
+                if (requestTime === state.lastRequestTime) {
+                    console.error(`Error updating slice after structure toggle: ${error.message || 'Unknown error'}`);
+
+                    // Alert the user of the error
+                    alert(`Error toggling structure ${structureName}. Please try again.`);
+
+                    // Reset UI state
+                    showLoading(false);
+                    state.structureToggleInProgress = false;
+                    state.structureUpdateInProgress = false;
+
+                    // Revert the checkbox to its previous state to match the actual state
+                    const checkbox = document.querySelector(`[data-name="${structureName}"]`);
+                    if (checkbox) {
+                        // Revert the checkbox state
+                        checkbox.checked = !isChecked;
+
+                        // Also update the state.selectedStructures array to match
+                        if (!isChecked) {
+                            // It was unchecked but we're reverting, so add it back
+                            if (!state.selectedStructures.includes(structureName)) {
+                                state.selectedStructures.push(structureName);
+                            }
+                        } else {
+                            // It was checked but we're reverting, so remove it
+                            state.selectedStructures = state.selectedStructures.filter(
+                                name => name !== structureName
+                            );
+                        }
+                    }
+                }
+            });
+    }, 300); // Longer debounce delay to prevent rapid toggling issues
 }
 
-// Handle toggle all structures
+// Handle toggle all structures with improved reliability
 function handleToggleAllStructures() {
     // Set the structureToggleInProgress flag to prevent scrolling
     state.structureToggleInProgress = true;
 
     const checkAll = elements.toggleAllStructures.checked;
+    console.log(`Toggle all structures: ${checkAll ? 'ON' : 'OFF'}`);
 
-    // Update all checkboxes
+    // Store previous structures for comparison and potential rollback
+    const previousStructures = [...state.selectedStructures];
+
+    // Update all checkboxes and gather all structure names
+    const allStructureNames = [];
     document.querySelectorAll('.structure-checkbox').forEach(checkbox => {
         checkbox.checked = checkAll;
-
-        // Update selected structures array
-        const structureName = checkbox.dataset.name;
-        if (checkAll) {
-            if (!state.selectedStructures.includes(structureName)) {
-                state.selectedStructures.push(structureName);
-            }
-        } else {
-            state.selectedStructures = [];
-        }
+        allStructureNames.push(checkbox.dataset.name);
     });
 
-    // Clear the cache when structures change
-    state.sliceCache = {};
+    // Update the selected structures array
+    if (checkAll) {
+        // Add all unique structure names
+        state.selectedStructures = [...new Set(allStructureNames)];
+    } else {
+        // Clear all structures
+        state.selectedStructures = [];
+    }
 
-    // Force preloading to stop by setting flag to false
-    const wasPreloading = state.preloadComplete;
-    state.preloadComplete = false;
+    // Cancel any previous structure updates
+    if (state.structureUpdateTimeout) {
+        clearTimeout(state.structureUpdateTimeout);
+    }
 
-    // Update the current slice immediately to show changes
-    showLoading(true);
+    // If another structure update is in progress, cancel it
+    if (state.structureUpdateInProgress) {
+        console.log('Cancelling previous structure update - toggle all triggered');
+        state.lastRequestTime = Date.now();
+    }
 
-    // Immediately load the current slice to show the structure change
-    loadSlice(state.sliceIndex).then(data => {
-        // Update the display with the new slice that includes structure changes
-        const currentSliceIdx = state.sliceIndex;
+    // Flag that we're now processing a structure update
+    state.structureUpdateInProgress = true;
+
+    // Get the current slice index and cache key
+    const currentSliceIdx = state.sliceIndex;
+    const currentCacheKey = getCacheKey(currentSliceIdx);
+
+    // Check if we already have this view cached
+    const cachedSliceWithCurrentStructures = state.sliceCache[currentCacheKey];
+
+    // If the current view with the new structure selection is already cached,
+    // we can just display it immediately without loading
+    if (cachedSliceWithCurrentStructures) {
+        console.log('All structures toggled. Using existing cached slice with updated structures.');
+
+        // Update the display immediately from cache with smooth transition
         elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
         elements.dicomImage.style.opacity = 0;
 
-        // Use a timeout to ensure the fade out is visible
-        setTimeout(() => {
-            elements.dicomImage.src = `data:image/png;base64,${data.image}`;
+        requestAnimationFrame(() => {
+            elements.dicomImage.src = `data:image/png;base64,${cachedSliceWithCurrentStructures.image}`;
             elements.dicomImage.style.opacity = 1;
-            updateSliceInfo(currentSliceIdx, data);
+            updateSliceInfo(currentSliceIdx, cachedSliceWithCurrentStructures);
 
-            // Hide loading indicator
-            showLoading(false);
-
-            // Re-enable scrolling after the current slice is updated
+            // Reset the flags after a short delay to ensure UI has updated
             setTimeout(() => {
-                // Reset the structure toggle flag to allow scrolling again
                 state.structureToggleInProgress = false;
+                state.structureUpdateInProgress = false;
+                console.log('Toggle all structures complete (from cache)');
+            }, 50);
+        });
 
-                // If we were preloading before, restart preloading in the background
-                if (wasPreloading && state.usePreloading) {
-                    preloadSlices();
-                }
-            }, 200); // Short delay to prevent immediate scrolling
-        }, 50);
-    }).catch(error => {
-        console.error('Error updating slice after toggling all structures:', error);
-        showLoading(false);
-        // Make sure to reset the flag even on error
-        state.structureToggleInProgress = false;
-    });
+        return;
+    }
+
+    // If we don't have a cache hit, need to load the slice with the updated structure selection
+    console.log('All structures toggled. No cache hit, loading slice with updated structures.');
+    showLoading(true);
+
+    // Record the request time to handle race conditions
+    const requestTime = Date.now();
+    state.lastRequestTime = requestTime;
+
+    // Load the current slice without disturbing the existing cache
+    loadSlice(currentSliceIdx)
+        .then(data => {
+            // Only process if this is still the most recent request
+            if (requestTime !== state.lastRequestTime) {
+                console.log('Ignoring outdated toggle all structures request');
+                return;
+            }
+
+            console.log('Toggle all structures slice loaded successfully');
+
+            // Update the display with smooth transition
+            elements.dicomImage.style.transition = 'opacity 0.15s ease-in-out';
+            elements.dicomImage.style.opacity = 0;
+
+            // Use requestAnimationFrame for smoother UI updates
+            requestAnimationFrame(() => {
+                // Update the image
+                elements.dicomImage.src = `data:image/png;base64,${data.image}`;
+                elements.dicomImage.style.opacity = 1;
+                updateSliceInfo(currentSliceIdx, data);
+
+                // Hide loading indicator
+                showLoading(false);
+
+                // Reset the flags after a short delay to ensure UI has updated
+                setTimeout(() => {
+                    state.structureToggleInProgress = false;
+                    state.structureUpdateInProgress = false;
+                    console.log('Toggle all structures complete (from server)');
+                }, 50);
+
+                // IMPORTANT: Don't restart preloading - we want to maintain the cache
+                console.log('All structures toggled. Maintaining existing cache.');
+            });
+        })
+        .catch(error => {
+            // Only handle errors for the most recent request
+            if (requestTime === state.lastRequestTime) {
+                console.error(`Error updating slice after toggling all structures: ${error.message || 'Unknown error'}`);
+
+                // Alert the user of the error
+                alert(`Error toggling all structures. Please try again.`);
+
+                // Reset UI state
+                showLoading(false);
+                state.structureToggleInProgress = false;
+                state.structureUpdateInProgress = false;
+
+                // Rollback to previous state
+                state.selectedStructures = previousStructures;
+
+                // Update checkboxes to match previous state
+                document.querySelectorAll('.structure-checkbox').forEach(checkbox => {
+                    const structureName = checkbox.dataset.name;
+                    checkbox.checked = previousStructures.includes(structureName);
+                });
+
+                // Revert the toggle all checkbox
+                elements.toggleAllStructures.checked = !checkAll;
+            }
+        });
 }
 
 // Handle DVH structure change
@@ -1172,9 +1437,22 @@ function handleScreenshot() {
     document.body.removeChild(link);
 }
 
-// Apply image transformations
+// Apply image transformations with enhanced stability
 function applyImageTransform() {
+    // Use more stable CSS transform with fixed transform origin
+    // This ensures the zoom and pan behave consistently across slices
+    elements.dicomImage.style.transformOrigin = 'center center';
     elements.dicomImage.style.transform = `scale(${state.imageScale}) translate(${state.panOffset.x}px, ${state.panOffset.y}px)`;
+
+    // Apply additional CSS to maintain image position stability
+    elements.dicomImage.style.maxWidth = 'none'; // Prevent automatic resizing
+    elements.dicomImage.style.margin = 'auto'; // Center the image
+
+    // Update the data attribute for the current transform state
+    // This helps maintain consistent state between updates
+    elements.dicomImage.dataset.scale = state.imageScale;
+    elements.dicomImage.dataset.panX = state.panOffset.x;
+    elements.dicomImage.dataset.panY = state.panOffset.y;
 }
 
 // Handle mouse wheel for slice navigation

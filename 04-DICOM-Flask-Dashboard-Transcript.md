@@ -26,6 +26,7 @@ Walk through the main components of the interface:
 > "The interface has a clean, dark theme design that's easier on the eyes when reviewing medical images. On the left side, we have our control panel with collapsible sections. The main area will display our DICOM images and data visualizations."
 
 Point out these key elements:
+
 - Left sidebar with patient selection and controls
 - Main viewing area with tabs
 - Responsive design that works on different screen sizes
@@ -37,6 +38,7 @@ Select a patient from the dropdown menu:
 > "Let's select a patient from our test cases. When we choose a patient, the application loads all associated DICOM data - CT images, structures, plan, and dose information - and prepares them for visualization."
 
 Note how the UI updates to show:
+
 - Patient information
 - Slice navigation controls
 - Window/level controls
@@ -121,6 +123,7 @@ If possible, show the application on a tablet or simulate a mobile view:
 Highlight some key advantages over the Streamlit version:
 
 > "Compared to our earlier Streamlit application, this dashboard offers several advantages:
+>
 > - Better performance with less page reloading
 > - More intuitive controls and layout
 > - Advanced image manipulation like zoom and pan
