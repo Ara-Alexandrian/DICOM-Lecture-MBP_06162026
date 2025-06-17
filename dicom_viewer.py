@@ -1,15 +1,20 @@
-import streamlit as st
-import pydicom
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon
-from matplotlib.collections import PatchCollection
-import pandas as pd
-from matplotlib.path import Path
-import matplotlib.colors as mcolors
-from matplotlib.figure import Figure
-from io import BytesIO
+# RT DICOM Viewer - Streamlit Application
+# This application provides a web-based viewer for radiotherapy DICOM files
+# It supports viewing of CT images, RT Structure Sets, RT Plans, and RT Dose distributions
+# The viewer includes features like window/level adjustment, structure overlays, and DVH calculation
+
+import streamlit as st         # Web application framework
+import pydicom                 # For reading DICOM files
+import os                      # File system operations
+import numpy as np             # Numerical processing
+import matplotlib.pyplot as plt                # Plotting library
+from matplotlib.patches import Polygon         # For structure contour rendering
+from matplotlib.collections import PatchCollection  # For grouping contour polygons
+import pandas as pd            # For data manipulation and display
+from matplotlib.path import Path              # For polygon masking in DVH calculation
+import matplotlib.colors as mcolors           # For color mapping of dose overlays
+from matplotlib.figure import Figure          # For plot generation
+from io import BytesIO                        # For image handling
 
 # Set page configuration
 st.set_page_config(
@@ -28,14 +33,23 @@ This application allows you to explore radiotherapy DICOM files including:
 - RT Dose distributions
 """)
 
-# Function to list available patients
+# Function to list available patients from the data directory
 def list_patients():
-    data_dir = "data/test-cases"
+    """
+    Scans the data directory for patient folders and returns a list of patient IDs
+
+    Returns:
+        list: A list of patient IDs found in the data directory
+    """
+    data_dir = "data/test-cases"  # Path to the patient data directory
+
+    # Check if the data directory exists
     if not os.path.exists(data_dir):
         st.error(f"Data directory not found: {data_dir}")
         return []
-    
-    patients = [d for d in os.listdir(data_dir) 
+
+    # List all directories in the data directory (each directory is a patient)
+    patients = [d for d in os.listdir(data_dir)
                if os.path.isdir(os.path.join(data_dir, d))]
     return patients
 
@@ -54,47 +68,80 @@ selected_patient = st.sidebar.selectbox(
 patient_dir = os.path.join("data/test-cases", selected_patient)
 st.sidebar.info(f"Patient Directory: {patient_dir}")
 
-# Function to load CT images
-@st.cache_data
+# Function to load CT images from a patient directory
+@st.cache_data  # Streamlit caching to avoid reloading the same files
 def load_ct_files(patient_dir):
+    """
+    Loads all CT image files from a patient directory
+
+    Args:
+        patient_dir (str): Path to the patient directory containing DICOM files
+
+    Returns:
+        list: A list of dictionaries containing CT slice information and DICOM objects
+              Each dictionary includes: file name, path, DICOM instance, z position, and slice thickness
+    """
+    # Find all CT image files in the directory
     ct_files = [f for f in os.listdir(patient_dir) if f.startswith("CT")]
-    ct_files.sort()  # Sort to get them in order
-    
+    ct_files.sort()  # Sort filenames to get them in rough order
+
     ct_data = []
     for ct_file in ct_files:
         try:
+            # Read the DICOM file
             ds = pydicom.dcmread(os.path.join(patient_dir, ct_file))
+
+            # Extract and store key information
             ct_data.append({
-                'file': ct_file,
-                'path': os.path.join(patient_dir, ct_file),
-                'instance': ds,
-                'z': float(ds.SliceLocation),
-                'thickness': float(ds.SliceThickness)
+                'file': ct_file,                           # File name
+                'path': os.path.join(patient_dir, ct_file), # Full file path
+                'instance': ds,                            # DICOM dataset object
+                'z': float(ds.SliceLocation),              # Z coordinate (slice position)
+                'thickness': float(ds.SliceThickness)      # Slice thickness in mm
             })
         except Exception as e:
+            # Handle any errors during file loading
             st.warning(f"Error loading {ct_file}: {str(e)}")
-    
-    # Sort by slice location
+
+    # Sort slices by z position to ensure proper order
     ct_data.sort(key=lambda x: x['z'])
-    
+
     return ct_data
 
-# Function to load RT Structure Set
-@st.cache_data
+# Function to load RT Structure Set from a patient directory
+@st.cache_data  # Streamlit caching to avoid reloading the same file
 def load_structure_set(patient_dir):
+    """
+    Loads the RT Structure Set file from a patient directory
+
+    Args:
+        patient_dir (str): Path to the patient directory containing DICOM files
+
+    Returns:
+        dict or None: A dictionary containing RT Structure Set information and DICOM object,
+                     or None if no structure set is found
+    """
+    # Find all RT Structure Set files (they start with "RS")
     rs_files = [f for f in os.listdir(patient_dir) if f.startswith("RS")]
+
+    # If no structure set found, return None
     if not rs_files:
         return None
-    
+
+    # Use the first structure set file (usually there's only one)
     rs_path = os.path.join(patient_dir, rs_files[0])
     try:
+        # Read the DICOM file
         rs = pydicom.dcmread(rs_path)
+
+        # Return a dictionary with the structure set information
         return {
-            'file': rs_files[0],
-            'path': rs_path,
-            'instance': rs
+            'file': rs_files[0],     # File name
+            'path': rs_path,         # Full file path
+            'instance': rs           # DICOM dataset object
         }
     except Exception as e:
+        # Handle any errors during file loading
         st.warning(f"Error loading structure set: {str(e)}")
         return None
 
@@ -136,23 +183,62 @@ def load_rt_dose(patient_dir):
         st.warning(f"Error loading RT dose: {str(e)}")
         return None
 
-# Function to convert pixel data to Hounsfield Units (HU)
+# Function to convert CT pixel data to Hounsfield Units (HU)
 def get_hu_values(ct_slice):
-    # Get pixel values
+    """
+    Converts raw CT pixel data to Hounsfield Units (HU) using the DICOM rescale parameters
+
+    Hounsfield Units are a standardized scale for reporting CT numbers, where:
+    - Water is 0 HU
+    - Air is approximately -1000 HU
+    - Bone is typically +400 to +1000 HU
+
+    Args:
+        ct_slice (pydicom.dataset.FileDataset): DICOM CT slice object
+
+    Returns:
+        numpy.ndarray: 2D array of pixel values converted to Hounsfield Units
+    """
+    # Get raw pixel values from the DICOM object
     pixel_array = ct_slice.pixel_array
-    
-    # Convert to HU using slope and intercept
-    intercept = ct_slice.RescaleIntercept
-    slope = ct_slice.RescaleSlope
-    
+
+    # Get rescale parameters from the DICOM header
+    intercept = ct_slice.RescaleIntercept  # Usually -1024 for CT
+    slope = ct_slice.RescaleSlope          # Usually 1 for CT
+
+    # Apply the rescale formula: HU = pixel_value * slope + intercept
     hu_values = pixel_array * slope + intercept
     return hu_values
 
-# Function to apply window/level to the image
+# Function to apply window/level (brightness/contrast) to the CT image
 def apply_window_level(hu_image, window_center, window_width):
-    min_value = window_center - window_width/2
-    max_value = window_center + window_width/2
+    """
+    Applies windowing to a CT image to enhance visualization of specific tissue types
+
+    Window/level (also known as window width/window center) controls how HU values
+    are mapped to the grayscale display. Different window settings are used to
+    visualize different anatomical structures:
+    - Soft tissue: window center ~40, window width ~400
+    - Lung: window center ~-600, window width ~1500
+    - Bone: window center ~500, window width ~2000
+
+    Args:
+        hu_image (numpy.ndarray): 2D array of Hounsfield Units
+        window_center (float): Center of the window (level)
+        window_width (float): Width of the window (contrast)
+
+    Returns:
+        numpy.ndarray: Windowed image with values clipped to the specified range
+    """
+    # Calculate window boundaries
+    min_value = window_center - window_width/2  # Lower bound
+    max_value = window_center + window_width/2  # Upper bound
+
+    # Clip HU values to the window range
+    # Values below min_value will be set to min_value
+    # Values above max_value will be set to max_value
     hu_image_windowed = np.clip(hu_image, min_value, max_value)
+
     return hu_image_windowed
 
 # Function to get contour data for a specific structure
@@ -205,78 +291,107 @@ def list_structures(rs_instance):
     
     return structures
 
-# Function to display CT slice
-def display_ct_slice(ct_slice, window_center, window_width, structures_to_show=None, rs=None, 
+# Function to display CT slice with structure overlays and dose information
+def display_ct_slice(ct_slice, window_center, window_width, structures_to_show=None, rs=None,
                     dose_overlay=None, dose_opacity=0.5, dose_colormap='jet', dose_max=None):
-    # Get HU values
+    """
+    Renders a CT slice with optional structure contours and dose overlay
+
+    This function creates a visualization of a CT slice with customizable
+    window/level settings. It can also overlay RT structure contours and
+    RT dose distribution if provided.
+
+    Args:
+        ct_slice (pydicom.dataset.FileDataset): DICOM CT slice object
+        window_center (float): Center of the window (level)
+        window_width (float): Width of the window (contrast)
+        structures_to_show (list, optional): List of structure names to overlay
+        rs (dict, optional): RT Structure Set data
+        dose_overlay (numpy.ndarray, optional): 2D array of dose values
+        dose_opacity (float, optional): Opacity of dose overlay (0.0-1.0)
+        dose_colormap (str, optional): Matplotlib colormap name for dose display
+        dose_max (float, optional): Maximum dose value for colormap scaling
+
+    Returns:
+        tuple: (matplotlib figure, list of structures actually displayed)
+    """
+    # Convert pixel data to Hounsfield Units
     hu_image = get_hu_values(ct_slice)
-    
-    # Apply window/level
+
+    # Apply window/level settings for visualization
     hu_image_windowed = apply_window_level(hu_image, window_center, window_width)
-    
-    # Create figure
+
+    # Create figure and plot the CT image
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(hu_image_windowed, cmap='gray')
-    
+
     # Track which structures are actually shown for reporting
     structures_shown = []
-    
-    # Add structures if requested
+
+    # Add structure contours if requested
     if structures_to_show and rs:
-        current_z = ct_slice.SliceLocation
-        
+        current_z = ct_slice.SliceLocation  # Z-position of current slice
+
         # Calculate vertical spacing for structure labels
         label_y_offset = 30
-        
+
+        # Process each requested structure
         for i, structure_name in enumerate(structures_to_show):
             contour_data = get_contour_data(rs, structure_name)
             if not contour_data:
                 continue
-            
+
             # Find contours on this slice (with increased tolerance for small structures)
+            # The 1.0mm tolerance allows for small differences in slice positioning
             contours_on_slice = [c for c in contour_data if np.isclose(c['z'], current_z, atol=1.0)]
-            
-            # Add contours to the plot
+
+            # Create polygons for each contour
             patches = []
             for contour in contours_on_slice:
-                # Extract x,y coordinates
+                # Extract x,y coordinates from the 3D points
                 points = contour['triplets'][:, :2]
                 polygon = Polygon(points, closed=True)
                 patches.append(polygon)
-            
-            # Create a collection and add it to the plot
+
+            # Add contours to the plot if any were found
             if patches:
-                color = contour_data[0]['color']
-                collection = PatchCollection(patches, alpha=0.5, color=color, linewidths=2, edgecolor=color)
+                color = contour_data[0]['color']  # Use the color from DICOM
+                collection = PatchCollection(
+                    patches,
+                    alpha=0.5,              # Semi-transparent fill
+                    color=color,            # Structure color
+                    linewidths=2,           # Contour line width
+                    edgecolor=color         # Contour line color
+                )
                 ax.add_collection(collection)
-                
+
                 # Add structure name label to image with vertical spacing
                 label_y = label_y_offset + (i * 25)  # Offset each label
-                ax.text(10, label_y, structure_name, 
-                       color='white', fontsize=14, 
+                ax.text(10, label_y, structure_name,
+                       color='white', fontsize=14,
                        bbox=dict(facecolor=color, alpha=0.7, edgecolor='none', pad=3))
-                
+
                 structures_shown.append(structure_name)
-    
-    # Add dose overlay if requested
+
+    # Add dose overlay if provided
     dose_display = None
     if dose_overlay is not None:
-        # Use the provided dose_max (global max) instead of per-slice max
+        # Use the provided dose_max (global max) for consistent colormap scaling across slices
         if dose_max is not None and dose_max > 0:
-            # Use the specified colormap and opacity
+            # Create the dose overlay with specified colormap and opacity
             cmap = plt.get_cmap(dose_colormap)
-            norm = mcolors.Normalize(vmin=0, vmax=dose_max)
+            norm = mcolors.Normalize(vmin=0, vmax=dose_max)  # Scale from 0 to max dose
             dose_display = ax.imshow(dose_overlay, cmap=cmap, norm=norm, alpha=dose_opacity)
-            
-            # Add colorbar for dose scale
+
+            # Add colorbar to show the dose scale
             cbar = fig.colorbar(dose_display, ax=ax, orientation='vertical', pad=0.01)
             cbar.set_label('Dose (Gy)', rotation=270, labelpad=15)
-    
-    # Add slice position info
+
+    # Add slice position info as the title
     slice_info = f"CT Slice at {ct_slice.SliceLocation}mm"
     ax.set_title(slice_info)
-    ax.axis('off')
-    
+    ax.axis('off')  # Hide axes for cleaner visualization
+
     return fig, structures_shown
 
 # Function to get dose slice for a specific z position

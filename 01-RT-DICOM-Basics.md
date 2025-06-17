@@ -24,7 +24,7 @@ In radiotherapy, three special DICOM files work together to define treatment:
 Example structure types:
 - **PTVs**: Planning Target Volumes (what to treat)
 - **OARs**: Organs At Risk (what to avoid)
-- **External**: Body contour
+- **External**: Body contour (sometimes called body, external or even skin)
 
 ### 2. RT Plan (RTPLAN / RP)
 
